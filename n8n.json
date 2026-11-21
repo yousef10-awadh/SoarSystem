@@ -1,0 +1,291 @@
+{
+  "name": "SOC Phishing Pipeline - Project (IMAP + Webhook)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "phishing-report",
+        "authentication": "headerAuth",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        -1500,
+        -460
+      ],
+      "id": "d769afbc-4cc2-47e0-a4a0-56835c77a7ee",
+      "name": "Webhook - Report Email",
+      "webhookId": "67d10a57-806b-427d-9974-0db1059df63e"
+    },
+    {
+      "parameters": {
+        "postProcessAction": "read",
+        "options": {
+          "customEmailConfig": "[\"UNSEEN\"]"
+        },
+        "format": "simple",
+        "mailbox": "INBOX"
+      },
+      "type": "n8n-nodes-base.emailReadImap",
+      "typeVersion": 2,
+      "position": [
+        -1500,
+        -760
+      ],
+      "id": "ae137e52-232d-4afe-b846-cc0ea1a39b24",
+      "name": "Email Read (IMAP)",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "jsCode": "const request = $json.body && typeof $json.body === 'object' ? $json.body : $json;\nconst emailContent = request.email_content || request.email_body || request.raw_email || request.textPlain || request.textHtml || request.text || request.html || '';\nif (!String(emailContent).trim()) throw new Error('No email content received.');\nconst rawFrom = request.from;\nconst fromValues = Array.isArray(rawFrom?.value) ? rawFrom.value.map(v => v.address).filter(Boolean) : [];\nconst sender = request.sender_email || fromValues.join(', ') || (typeof rawFrom === 'string' ? rawFrom : rawFrom?.address || rawFrom?.text) || 'unknown@sender.com';\nconst subject = request.email_subject || request.subject || 'No Subject';\nconst body = request.email_body || request.textPlain || request.textHtml || request.text || request.html || request.raw_email || emailContent || '';\nconst headersObject = request.headers || {};\nconst metadataObject = request.metadata || {};\nconst headers = request.raw_headers || JSON.stringify({headers:headersObject,metadata:metadataObject});\nconst parsedDate = request.email_date || request.date || new Date().toISOString();\nconst authText = (typeof headersObject === 'string' ? headersObject : JSON.stringify(headersObject)) + ' ' + JSON.stringify(metadataObject);\nfunction authState(protocol) {\n  const match = authText.match(new RegExp(protocol + '=([a-z]+)','i'));\n  return match ? match[1].toLowerCase() : 'not_found';\n}\nconst authentication = {spf:authState('spf'),dkim:authState('dkim'),dmarc:authState('dmarc')};\nconst urlMatches = String(emailContent).match(/https?:\\/\\/[^\\s<>\"')\\]]+/gi) || [];\nconst links = [...new Map(urlMatches.map(raw => {\n  const cleaned = raw.replace(/&amp;/gi,'&').replace(/[.,;!?]+$/,'');\n  try { const u = new URL(cleaned); return [u.origin + u.pathname,{host:u.hostname,path:u.pathname || '/'}]; }\n  catch { return [cleaned,null]; }\n}).filter(entry => entry[1])).values()];\nconst signalText = `${subject}\\n${emailContent}`.toLowerCase();\nconst suspicionReasons = [];\nconst credentialTerms = /(?:password|passcode|username|user\\s*name|credentials?|sign\\s*in|log\\s*in|login|كلمة\\s*المرور|كلمه\\s*المرور|كلمة\\s*السر|باسورد|اسم\\s*المستخدم|اسم\\s*الدخول|تسجيل\\s*الدخول|سجل\\s*الدخول)/i;\nconst actionTerms = /(?:enter|provide|confirm|verify|submit|update|reset|restore|validate|ادخل|أدخل|قم\\s*بتسجيل|سجل\\s*الدخول|تحقق|أكد|تأكيد|حدّث|تحديث|استعد|استعادة)/i;\nif (credentialTerms.test(signalText) && actionTerms.test(signalText)) suspicionReasons.push('طلب بيانات دخول أو كلمة مرور');\nconst linkActionTerms = /(?:click|open|visit|follow|access|go\\s+to|review|verify|confirm|update|اضغط|انقر|افتح|ادخل|أدخل|اذهب|انتقل|زور|الرابط|تحقق|أكد|تأكيد|حدّث|تحديث)/i;\nif (links.length && linkActionTerms.test(signalText)) suspicionReasons.push('رابط مرفق مع دعوة لفتحه أو التحقق من الحساب');\nconst urgencyTerms = /(?:urgent|immediately|suspended|blocked|expire|within\\s+\\d+\\s+hours?|عاجل|فوراً|فورا|موقوف|محظور|سيتم\\s*إغلاق|إغلاق\\s*الحساب|ينتهي|خلال\\s*\\d+)/i;\nif (links.length && urgencyTerms.test(signalText) && !suspicionReasons.length) suspicionReasons.push('رابط مصحوب بتهديد أو استعجال');\nconst scanText = String(emailContent).replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi,' ');\nconst context = {sender_email:String(sender).slice(0,255),email_subject:String(subject).slice(0,255),email_body:String(body),email_date:parsedDate,raw_headers:String(headers),reporter_ou:request.reporter_ou || 'SOC_IMAP_Workflow',campaign_id:request.campaign_id || null,links,authentication,is_suspicious:suspicionReasons.length>0,suspicion_reasons:suspicionReasons};\nconst domainRegex=/\\b(?:[a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,63}\\b/g, ipRegex=/\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b/g;\nconst privateIpRanges=[/^10\\./,/^172\\.(1[6-9]|2[0-9]|3[0-1])\\./,/^192\\.168\\./,/^127\\./,/^169\\.254\\./];\nconst unwantedDomains=[/\\.outlook\\.com$/i,/\\.protection\\.outlook\\.com$/i,/\\.office365\\.com$/i,/^smtp\\.mailfrom$/i,/^header\\.from$/i];\nconst domains=[...new Set(scanText.match(domainRegex)||[])].filter(d=>!unwantedDomains.some(p=>p.test(d))&&d.length<=253);\nconst ips=[...new Set(String(emailContent).match(ipRegex)||[])].filter(ip=>ip.split('.').every(o=>Number(o)<=255)&&!privateIpRanges.some(p=>p.test(ip)));\nconst indicators=domains.map(value=>({type:'Domain',value})).concat(ips.map(value=>({type:'IP',value})));\nif (!context.is_suspicious) return [];\nreturn (indicators.length?indicators:[{type:'None',value:'No public indicators found'}]).map(i=>({json:{...context,...i}}));\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1140,
+        -160
+      ],
+      "id": "bf615eb3-88ae-426a-8e16-6bf9226a3190",
+      "name": "Code",
+      "alwaysOutputData": false
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "453748d1-6c00-48fa-91a4-ffec6f177995",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "None",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -850,
+        -160
+      ],
+      "id": "9333e534-6884-4c17-becb-528e7e52c6b4",
+      "name": "Has public indicators?"
+    },
+    {
+      "parameters": {
+        "curlImport": "",
+        "httpVariantWarning": "",
+        "method": "GET",
+        "url": "=https://www.virustotal.com/api/v3/{{$json[\"type\"] === \"Domain\" ? \"domains\" : \"ip_addresses\"}}/{{$json[\"value\"]}}",
+        "": "",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "virusTotalApi",
+        "provideSslCertificates": false,
+        "sendQuery": false,
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": false,
+        "options": {},
+        "infoMessage": ""
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        -520,
+        -260
+      ],
+      "id": "6b987885-bcdc-457d-a053-a833b09326ed",
+      "name": "VirusTotal HTTP Request",
+      "extendsCredential": "virusTotalApi",
+      "credentials": {
+        "virusTotalApi": {
+          "id": "3G6TN0pE37bHabxh",
+          "name": "VirusTotal account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "amount": 10
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        -260,
+        -260
+      ],
+      "id": "b17badfe-cf41-4c79-a497-981ee958998c",
+      "name": "Wait",
+      "webhookId": "5c895bc9-7671-4dfb-a978-133eb77c490c"
+    },
+    {
+      "parameters": {
+        "jsCode": "const source=$('Code').first().json;\nconst results=$input.all().map(i=>i.json), scanned=[]; let maliciousCount=0;\nfor(const result of results){const data=result.data;if(!data?.attributes)continue;const stats=data.attributes.last_analysis_stats||{},count=Number(stats.malicious||0);maliciousCount+=count;scanned.push({type:data.type||'',value:data.id||'',malicious_count:count,suspicious_count:Number(stats.suspicious||0),harmless_count:Number(stats.harmless||0),undetected_count:Number(stats.undetected||0)});}\nconst resultText=maliciousCount>0?'وجد VirusTotal مؤشرات صنّفها بعض محركات الفحص على أنها خبيثة. راجع المؤشرات والرؤوس قبل اتخاذ إجراء.':'لم يرصد VirusTotal مؤشرات خبيثة في النطاقات أو عناوين IP التي فُحصت. هذا لا يثبت أن الرسالة أصلية؛ راجع المرسل ونتائج SPF وDKIM وDMARC.';\nconst notes={source:'n8n / VirusTotal',result:resultText,suspicion_reasons:source.suspicion_reasons||[],sender_email:source.sender_email,email_subject:source.email_subject,links:source.links||[],authentication:source.authentication||{spf:'not_found',dkim:'not_found',dmarc:'not_found'},scanned_indicators:scanned,malicious_detections:maliciousCount};\nreturn [{json:{sender_email:source.sender_email,email_subject:source.email_subject,email_body:source.email_body,email_date:source.email_date,raw_headers:source.raw_headers,reporter_ou:source.reporter_ou,campaign_id:source.campaign_id,analysis_status:maliciousCount>0?'malicious':'queued_sandbox',analyst_notes:JSON.stringify(notes)}}];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        80,
+        -160
+      ],
+      "id": "f59f5908-f4db-4efc-9e87-c7c043483b60",
+      "name": "Build Django Report"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8000/api/phishing/webhook/n8n-report/",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-N8N-API-KEY",
+              "value": "REPLACE_WITH_N8N_WEBHOOK_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        380,
+        -160
+      ],
+      "id": "d8a86059-bd95-414f-997d-9860f364ce0a",
+      "name": "Send to Django"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook - Report Email": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Read (IMAP)": {
+      "main": [
+        [
+          {
+            "node": "Code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code": {
+      "main": [
+        [
+          {
+            "node": "Has public indicators?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has public indicators?": {
+      "main": [
+        [
+          {
+            "node": "VirusTotal HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build Django Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "VirusTotal HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "Build Django Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Django Report": {
+      "main": [
+        [
+          {
+            "node": "Send to Django",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1b4294ed-d14c-4e25-9e6e-61e3f31f8e2d",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "9861a28cf9a13aec816a4d2c57a793d83141d92b438a8a96f03b86e89a9a94cf"
+  },
+  "id": "YxMUhdNQV7oPv7WV",
+  "tags": [
+    {
+      "createdAt": "2025-04-02T13:45:20.174Z",
+      "updatedAt": "2025-04-02T13:45:20.174Z",
+      "id": "IFFQEMtVAQUcJfZC",
+      "name": "Phishing Analysis"
+    }
+  ]
+}

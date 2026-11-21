@@ -1,0 +1,57 @@
+services:
+  # Local-only SMTP sink for campaign testing. Messages are viewable, never delivered externally.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: sec_awareness_mailpit
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"
+    networks:
+      - sec_network
+
+  # 1. حاوية قاعدة البيانات بأحدث إصدار رسمي
+  postgres_db:
+    image: postgres:latest
+    container_name: sec_awareness_db_new
+    restart: always
+    environment:
+      POSTGRES_USER: sec_admin
+      POSTGRES_PASSWORD: StrongPassword123!
+      POSTGRES_DB: awareness_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - sec_platform_pgdata:/var/lib/postgresql
+    networks:
+      - sec_network
+
+  # 2. حاوية محرك الأتمتة واستخراج بيانات التصيد (n8n) بأحدث إصدار
+  n8n_engine:
+    image: n8nio/n8n:latest
+    container_name: sec_awareness_n8n_new
+    restart: always
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - NODE_ENV=production
+      - WEBHOOK_URL=http://localhost:5678/
+    volumes:
+      - sec_platform_n8ndata:/home/node/.n8n
+    depends_on:
+      - postgres_db
+    networks:
+      - sec_network
+
+# وحدات التخزين الدائمة والمعزولة عن مشاريعك السابقة
+volumes:
+  sec_platform_pgdata:
+  sec_platform_n8ndata:
+
+# الشبكة الداخلية المعزولة
+networks:
+  sec_network:
+    driver: bridge
